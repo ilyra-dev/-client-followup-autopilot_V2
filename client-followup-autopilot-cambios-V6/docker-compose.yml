@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  autopilot:
+    build: .
+    container_name: client-followup-autopilot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      # Persistent storage for style data, logs, and tokens
+      - ./data/style_data:/app/.tmp/style_data
+      - ./data/logs:/app/.tmp
+      - ./tokens:/app/tokens
+      # Credentials (read-only)
+      - ./credentials.json:/app/credentials.json:ro
+      - ./token.json:/app/token.json:ro
+    environment:
+      - TZ=UTC
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
