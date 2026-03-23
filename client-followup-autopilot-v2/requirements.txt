@@ -9,3 +9,4 @@ slack-sdk
 schedule
 python-dateutil
 pytz
+tzdata
