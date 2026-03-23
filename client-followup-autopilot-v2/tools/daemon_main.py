@@ -36,6 +36,48 @@ from config import (
     BUSINESS_HOURS_END,
 )
 
+
+# ─── Lima Business Hours Helpers ────────────────────────────────────────────
+
+def _is_lima_business_hours():
+    """
+    Returns True if the current moment is within Leaf's operating window:
+    Monday–Friday, 09:00–17:59 PET (America/Lima, UTC-5).
+
+    Used to gate the outbound follow-up cycle so drafts/emails are never
+    generated on weekends or outside working hours.
+    """
+    try:
+        from zoneinfo import ZoneInfo
+    except ImportError:
+        from backports.zoneinfo import ZoneInfo
+    lima_tz = ZoneInfo("America/Lima")
+    now_lima = datetime.now(lima_tz)
+    if now_lima.weekday() >= 5:  # 5=Saturday, 6=Sunday
+        return False
+    if now_lima.hour < 9 or now_lima.hour >= 18:
+        return False
+    return True
+
+
+def _is_lima_weekday():
+    """
+    Returns True if today is a weekday (Mon–Fri) in Lima timezone.
+    Used to gate scheduled reports so they don't fire on weekends.
+    """
+    try:
+        from zoneinfo import ZoneInfo
+    except ImportError:
+        from backports.zoneinfo import ZoneInfo
+    lima_tz = ZoneInfo("America/Lima")
+    now_lima = datetime.now(lima_tz)
+    weekday = now_lima.weekday()
+    if weekday >= 5:
+        logger.info(f"Today is {now_lima.strftime('%A')} in Lima — skipping scheduled report (weekend)")
+        return False
+    return True
+
+
 # ─── Logging Setup ──────────────────────────────────────────────────────────
 
 TMP_DIR.mkdir(parents=True, exist_ok=True)
@@ -85,6 +127,10 @@ def outbound_cycle():
     Flow 1: Check Notion for pending items and send/draft follow-ups.
     Respects business hours per client country.
     """
+    # ── Business-hours gate (America/Lima, UTC-5) ──────────────────────────
+    if not _is_lima_business_hours():
+        logger.debug("Outbound cycle skipped — outside Lima business hours (Mon-Fri 09:00-18:00 PET)")
+        return
     logger.info("=== OUTBOUND CYCLE START ===")
     try:
         from check_pending_items import get_actionable_items
@@ -219,38 +265,66 @@ def learning_cycle():
         logger.info("=== LEARNING CYCLE END ===")
 
 
-def daily_summary_cycle():
+def morning_report_cycle():
     """
-    Genera y envía resumen diario al equipo CS.
+    CRON 1 — Reporte matutino de seguimientos pendientes del día.
+    Ejecuta a las 09:00 PET (14:00 UTC), Lunes a Viernes.
+    Logs de auditoría incluidos para verificar ejecución correcta.
     """
-    logger.info("=== DAILY SUMMARY CYCLE START ===")
     try:
-        from daily_summary import send_daily_summary
-        send_daily_summary()
-        logger.info("Resumen diario enviado exitosamente")
-    except Exception as e:
-        logger.error(f"Error en resumen diario: {e}\n{traceback.format_exc()}")
-    finally:
-        logger.info("=== DAILY SUMMARY CYCLE END ===")
+        from zoneinfo import ZoneInfo
+    except ImportError:
+        from backports.zoneinfo import ZoneInfo
+    lima_now = datetime.now(ZoneInfo("America/Lima"))
+    logger.info(f"=== MORNING REPORT CYCLE START === Lima time: {lima_now.strftime('%Y-%m-%d %H:%M %Z')}")
 
+    # Weekend guard — schedule fires daily at 14:00 UTC, block weekends
+    if not _is_lima_weekday():
+        logger.info("Morning report skipped — weekend in Lima timezone")
+        return
 
-def eod_summary_cycle():
-    """
-    Envía resumen de seguimientos del día al canal de Slack.
-    Se ejecuta a las 5 PM hora Perú (22:00 UTC).
-    """
-    logger.info("=== EOD SLACK SUMMARY START ===")
     try:
-        from daily_summary import send_eod_slack_summary
-        result = send_eod_slack_summary()
+        from daily_summary import send_morning_report
+        result = send_morning_report()
         if result:
-            logger.info("Resumen de fin de jornada enviado a Slack")
+            logger.info("✅ Reporte matutino enviado a Slack correctamente")
         else:
-            logger.warning("No se pudo enviar resumen EOD a Slack")
+            logger.warning("⚠️ Reporte matutino no pudo enviarse a Slack")
     except Exception as e:
-        logger.error(f"Error en resumen EOD: {e}\n{traceback.format_exc()}")
+        logger.error(f"Error en reporte matutino: {e}\n{traceback.format_exc()}")
     finally:
-        logger.info("=== EOD SLACK SUMMARY END ===")
+        logger.info("=== MORNING REPORT CYCLE END ===")
+
+
+def evening_report_cycle():
+    """
+    CRON 2 — Reporte vespertino de seguimientos realizados durante la jornada.
+    Ejecuta a las 18:00 PET (23:00 UTC), Lunes a Viernes.
+    Logs de auditoría incluidos para verificar ejecución correcta.
+    """
+    try:
+        from zoneinfo import ZoneInfo
+    except ImportError:
+        from backports.zoneinfo import ZoneInfo
+    lima_now = datetime.now(ZoneInfo("America/Lima"))
+    logger.info(f"=== EVENING REPORT CYCLE START === Lima time: {lima_now.strftime('%Y-%m-%d %H:%M %Z')}")
+
+    # Weekend guard — schedule fires daily at 23:00 UTC, block weekends
+    if not _is_lima_weekday():
+        logger.info("Evening report skipped — weekend in Lima timezone")
+        return
+
+    try:
+        from daily_summary import send_evening_report
+        result = send_evening_report()
+        if result:
+            logger.info("✅ Reporte vespertino enviado a Slack correctamente")
+        else:
+            logger.warning("⚠️ Reporte vespertino no pudo enviarse a Slack")
+    except Exception as e:
+        logger.error(f"Error en reporte vespertino: {e}\n{traceback.format_exc()}")
+    finally:
+        logger.info("=== EVENING REPORT CYCLE END ===")
 
 
 # ─── Main Loop ──────────────────────────────────────────────────────────────
@@ -288,15 +362,15 @@ def main():
     schedule.every(POLL_INTERVAL_TEAM_INBOUND).seconds.do(team_inbound_cycle)
     schedule.every(POLL_INTERVAL_OUTBOUND).seconds.do(learning_cycle)
 
-    # Daily summary — configurable time (default 13:00 UTC)
-    daily_summary_time = os.environ.get("DAILY_SUMMARY_TIME", "13:00")
-    schedule.every().day.at(daily_summary_time).do(daily_summary_cycle)
-    logger.info(f"Resumen diario programado a las {daily_summary_time} UTC")
+    # ── CRON 1: Morning report — 09:00 PET = 14:00 UTC, Mon-Fri ─────────────
+    morning_time = os.environ.get("MORNING_REPORT_TIME", "14:00")
+    schedule.every().day.at(morning_time).do(morning_report_cycle)
+    logger.info(f"Reporte matutino programado: {morning_time} UTC (09:00 PET) — solo L-V")
 
-    # EOD Slack summary — 5 PM hora Perú = 22:00 UTC
-    eod_time = os.environ.get("EOD_SUMMARY_TIME", "22:00")
-    schedule.every().day.at(eod_time).do(eod_summary_cycle)
-    logger.info(f"Resumen de fin de jornada (Slack) programado a las {eod_time} UTC (5 PM Perú)")
+    # ── CRON 2: Evening report — 18:00 PET = 23:00 UTC, Mon-Fri ──────────
+    evening_time = os.environ.get("EVENING_REPORT_TIME", "23:00")
+    schedule.every().day.at(evening_time).do(evening_report_cycle)
+    logger.info(f"Reporte vespertino programado: {evening_time} UTC (18:00 PET) — solo L-V")
 
     # Run initial cycles immediately
     logger.info("Running initial cycles...")
