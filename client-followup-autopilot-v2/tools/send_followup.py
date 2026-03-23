@@ -109,19 +109,11 @@ def send_followup_for_item(item):
         sender_email = GMAIL_DEFAULT_SENDER_EMAIL
         logger.warning(f"No CS member resolved for {item['project_name']}, using default sender")
 
-    # CC only the assigned analyst (if any) + admins. Never CC the full team.
-    cc_set = set()
-    admins_cc = team_manager.get_admins_cc()
-    if admins_cc:
-        for email in admins_cc.split(", "):
-            cc_set.add(email.strip())
-    # Add the analyst assigned to this project
-    analista_name = item.get("analista", "")
-    if analista_name:
-        analista_email = team_manager.resolve_email(analista_name)
-        if analista_email:
-            cc_set.add(analista_email)
-    # Never CC the sender (redundant — they already have it in Sent)
+    # CC: Diana Farje, Piero, and César Montes — always included on every
+    # follow-up email. Their emails are read from the Owner column in the
+    # Proyectos DB (no hardcoded addresses). No other recipients are added.
+    cc_set = set(team_manager.get_fixed_cc_emails())
+    # Never CC the sender (redundant — already in their Sent folder)
     cc_set.discard(sender_email)
     cc_recipients = ", ".join(sorted(cc_set)) if cc_set else ""
 
