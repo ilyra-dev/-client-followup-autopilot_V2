@@ -12,7 +12,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import gmail_client
-import slack_client
 from config import STYLE_DATA_DIR
 
 logger = logging.getLogger(__name__)
@@ -74,22 +73,10 @@ def create_draft_and_notify(
     draft_id = draft_result["id"]
     logger.info(f"Gmail draft created: {draft_id}")
 
-    # 2. Post to Slack review channel (tarjeta interactiva con botones)
+    # 2. [DEPRECATED] Slack notification to #client-success removed.
+    #    Drafts are now reviewed directly in Gmail. CS reviews and sends manually.
     body_preview = _strip_html(body_html)
-    slack_result = slack_client.post_draft_for_review(
-        project_name=project_name,
-        client_name=client_name,
-        subject=subject,
-        body_preview=body_preview,
-        draft_id=draft_id,
-        language=language,
-        recipient_email=to,
-        sender_email=from_email or "",
-        stage=stage,
-        cc=cc or "",
-    )
-
-    slack_ts = slack_result.get("ts") if slack_result else None
+    slack_ts = None
 
     # 3. Log draft for learning engine
     logged = _log_draft(
@@ -109,7 +96,7 @@ def create_draft_and_notify(
 
     return {
         "draft_id": draft_id,
-        "slack_ts": slack_ts,
+        "slack_ts": slack_ts,  # always None — Slack draft notifications deprecated
         "logged": logged,
     }
 
