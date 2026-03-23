@@ -164,6 +164,173 @@ if __name__ == "__main__":
     print(summary["body_text"])
 
 
+
+# ═════════════════════════════════════════════════════════════════════════════
+# REPORTE MATUTINO (09:00 PET = 14:00 UTC) — Solo Slack
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _get_today_pending():
+    """
+    Consulta Notion para obtener los items pendientes de seguimiento del día:
+    status activo, Manual Override=False, Next Follow-Up Date <= hoy.
+
+    Returns:
+        Lista de dicts con info básica de cada pendiente
+    """
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    pending = []
+
+    filter_params = {
+        "and": [
+            {
+                "property": "Status",
+                "status": {"is_not_empty": True}
+            },
+            {
+                "property": "Manual Override",
+                "checkbox": {"equals": False}
+            },
+            {
+                "property": "Next Follow-Up Date",
+                "date": {"on_or_before": today_str}
+            }
+        ]
+    }
+
+    try:
+        pages = notion_client.query_database(filter_params)
+        for page in pages:
+            status = notion_client.get_status_property(page, "Status")
+            if status not in ("Sin empezar", "En curso"):
+                continue
+
+            stage = notion_client.get_number_property(page, "Follow-Up Stage")
+            if stage >= 4:
+                continue
+
+            nombre = notion_client.get_text_property(page, "Nombre")
+            due_date = notion_client.get_date_property(page, "Fecha límite de Client Success")
+            cs_owner = notion_client.get_people_first(page, "Owner - Client Success")
+
+            overdue = 0
+            if due_date:
+                try:
+                    from datetime import date as _date
+                    due = _date.fromisoformat(due_date)
+                    today = _date.fromisoformat(today_str)
+                    overdue = max(0, (today - due).days)
+                except Exception:
+                    pass
+
+            pending.append({
+                "nombre": nombre or "—",
+                "next_stage": stage + 1,
+                "cs": cs_owner or "—",
+                "dias_atraso": overdue,
+                "due_date": due_date or "—",
+            })
+    except Exception as e:
+        logger.warning(f"Error consultando Notion para reporte matutino: {e}")
+
+    return pending
+
+
+def _build_morning_blocks(pending):
+    """
+    Construye los bloques Slack Block Kit para el reporte matutino.
+    Iconos: 🕒 pendientes, 👤 CS asignado, 🔴/🚨/📨/📩 por etapa.
+    """
+    now = datetime.now(timezone.utc)
+    date_display = (now - timedelta(hours=5)).strftime("%d/%m/%Y")  # Lima = UTC-5
+    total = len(pending)
+
+    blocks = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": f"☀️ Seguimientos del Día — {date_display}", "emoji": True}
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    f"*{total} seguimiento{'s' if total != 1 else ''}* pendiente{'s' if total != 1 else ''} para hoy "
+                    f"| Modo: *{SYSTEM_MODE}*"
+                )
+            }
+        },
+        {"type": "divider"},
+    ]
+
+    if total == 0:
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": "✅ Sin seguimientos pendientes para hoy. ¡Todo al día!"}
+        })
+    else:
+        stage_emoji = {1: "📩", 2: "📨", 3: "🚨", 4: "🔴"}
+        for item in pending[:15]:
+            s_emoji = stage_emoji.get(item["next_stage"], "📧")
+            overdue_text = (
+                f"🔴 *{item['dias_atraso']}d de atraso*" if item["dias_atraso"] > 0 else "🟢 A tiempo"
+            )
+            blocks.append({
+                "type": "section",
+                "fields": [
+                    {"type": "mrkdwn", "text": f"*🕒 Pendiente:*\n{item['nombre']}"},
+                    {"type": "mrkdwn", "text": f"*{s_emoji} Etapa:*\n{item['next_stage']}"},
+                    {"type": "mrkdwn", "text": f"*👤 CS:*\n{item['cs']}"},
+                    {"type": "mrkdwn", "text": f"*📅 Estado:*\n{overdue_text}"},
+                ]
+            })
+
+        if total > 15:
+            blocks.append({
+                "type": "context",
+                "elements": [{"type": "mrkdwn", "text": f"_...y {total - 15} seguimiento(s) más._"}]
+            })
+
+    blocks.append({"type": "divider"})
+    blocks.append({
+        "type": "context",
+        "elements": [
+            {"type": "mrkdwn", "text": f"🤖 Generado por {COMPANY_NAME} Follow-Up Autopilot | {now.strftime('%H:%M UTC')}"}
+        ]
+    })
+
+    return blocks
+
+
+def send_morning_report():
+    """
+    Envía al canal de Slack el listado de seguimientos pendientes del día.
+    Diseñado para ejecutarse a las 09:00 PET (14:00 UTC), Lunes a Viernes.
+
+    Returns:
+        Dict con resultado del envío o None
+    """
+    if not SLACK_REVIEW_CHANNEL:
+        logger.warning("SLACK_REVIEW_CHANNEL no configurado. No se puede enviar reporte matutino.")
+        return None
+
+    logger.info("Generando reporte matutino de seguimientos pendientes...")
+    pending = _get_today_pending()
+    blocks = _build_morning_blocks(pending)
+    fallback = f"Seguimientos del día: {len(pending)} pendiente(s) para hoy."
+
+    result = slack_client.send_message(
+        channel_id=SLACK_REVIEW_CHANNEL,
+        text=fallback,
+        blocks=blocks,
+    )
+
+    if result:
+        logger.info(f"Reporte matutino enviado a Slack: {len(pending)} pendientes")
+    else:
+        logger.error("Error enviando reporte matutino a Slack")
+
+    return result
+
 # ═════════════════════════════════════════════════════════════════════════════
 # RESUMEN DE FIN DE JORNADA (5 PM Perú) — Solo Slack
 # ═════════════════════════════════════════════════════════════════════════════
@@ -336,10 +503,10 @@ def _build_eod_blocks(followups):
     return blocks, fallback
 
 
-def send_eod_slack_summary():
+def send_evening_report():
     """
     Envía al canal de Slack un resumen de todos los seguimientos realizados durante el día.
-    Diseñado para ejecutarse a las 5 PM hora Perú (22:00 UTC).
+    Diseñado para ejecutarse a las 18:00 PET (23:00 UTC), Lunes a Viernes.
 
     Returns:
         Dict con resultado del envío o None
