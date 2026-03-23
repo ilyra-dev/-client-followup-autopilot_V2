@@ -29,6 +29,55 @@ def _is_cache_valid():
     return (time.time() - _cache["last_refresh"]) < CACHE_TTL_SECONDS
 
 
+
+# ─── Fixed CC Recipients ─────────────────────────────────────────────────────
+# These three people are ALWAYS included in CC on every follow-up email.
+# Their emails are resolved dynamically from the "Owner" column in the
+# Proyectos DB — no email addresses are hardcoded here.
+
+FIXED_CC_NAMES = ["Diana Farje", "Piero", "César Montes"]
+
+_fixed_cc_cache: dict = {
+    "emails": [],
+    "last_refresh": 0.0,
+}
+
+
+def get_fixed_cc_emails(force_refresh=False):
+    """
+    Returns the email list for Diana Farje, Piero, and César Montes.
+
+    Emails are resolved from the Owner column in the Proyectos database so no
+    address is hardcoded. Results are cached for CACHE_TTL_SECONDS.
+
+    These recipients are ALWAYS in CC on every follow-up email, regardless of
+    whether they are the Owner of the specific project being followed up.
+
+    Returns:
+        List of email strings (may be empty if Notion is unreachable on first call)
+    """
+    if not force_refresh and (time.time() - _fixed_cc_cache["last_refresh"]) < CACHE_TTL_SECONDS:
+        if _fixed_cc_cache["emails"]:
+            return _fixed_cc_cache["emails"]
+
+    try:
+        name_to_email = notion_client.get_owner_emails_by_names(FIXED_CC_NAMES)
+        emails = [email for email in name_to_email.values() if email]
+        if emails:
+            _fixed_cc_cache["emails"] = emails
+            _fixed_cc_cache["last_refresh"] = time.time()
+            logger.info(f"Fixed CC resolved: {len(emails)} recipients")
+        else:
+            logger.warning(
+                "No fixed CC emails resolved from Proyectos Owner column. "
+                "Check that Diana Farje, Piero, and César Montes appear as Owners "
+                "and that the Notion integration has read-user-email permission."
+            )
+    except Exception as e:
+        logger.error(f"Error resolving fixed CC emails: {e}")
+
+    return _fixed_cc_cache["emails"]  # return stale cache if refresh failed
+
 # ─── Core Functions ──────────────────────────────────────────────────────────
 
 def get_team_members(force_refresh=False):
