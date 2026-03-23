@@ -565,6 +565,72 @@ def resolve_client_country(page):
     return ""
 
 
+
+def get_people_with_emails(page, prop_name):
+    """
+    Extract list of (name, email) tuples from a people property.
+    Notion returns person.email when the integration has read-user-email permission.
+    """
+    prop = page.get("properties", {}).get(prop_name, {})
+    people = prop.get("people", [])
+    results = []
+    for p in people:
+        name = p.get("name", "")
+        email = p.get("person", {}).get("email", "")
+        results.append((name, email))
+    return results
+
+
+def get_owner_emails_by_names(target_names, database_id=None):
+    """
+    Scan the Proyectos DB to find email addresses for specific people by name
+    from the Owner column. Used to resolve fixed CC recipients without
+    hardcoding any email address.
+
+    Matching is case-insensitive and supports partial match so "Piero" matches
+    "Piero Apellido" and vice-versa.
+
+    Args:
+        target_names: List of person name strings to look up
+        database_id: Proyectos DB ID (defaults to NOTION_PROJECTS_DB_ID)
+
+    Returns:
+        Dict mapping canonical target_names → email string for each found person
+    """
+    db_id = database_id or NOTION_PROJECTS_DB_ID
+    if not db_id:
+        logger.warning("NOTION_PROJECTS_DB_ID not set — cannot resolve owner emails for CC")
+        return {}
+
+    target_lower = {n.lower(): n for n in target_names}
+    name_to_email = {}
+
+    try:
+        pages = query_database(database_id=db_id)
+        for page in pages:
+            for name, email in get_people_with_emails(page, "Owner"):
+                if not email:
+                    continue
+                name_key = name.lower()
+                for target_key, original_name in target_lower.items():
+                    if original_name in name_to_email:
+                        continue  # already found this one
+                    if target_key in name_key or name_key in target_key:
+                        name_to_email[original_name] = email
+            if len(name_to_email) >= len(target_names):
+                break  # Found all targets — stop scanning
+    except Exception as e:
+        logger.error(f"Error scanning Owner column in Proyectos DB: {e}")
+
+    found = list(name_to_email.keys())
+    missing = [n for n in target_names if n not in name_to_email]
+    if missing:
+        logger.warning(f"Could not find emails for: {missing} in Proyectos Owner column")
+    if found:
+        logger.info(f"Resolved owner emails for CC: {found}")
+
+    return name_to_email
+
 # ─── Notion Property Builders ───────────────────────────────────────────────
 
 def build_select(value):
